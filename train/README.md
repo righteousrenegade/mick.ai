@@ -30,6 +30,8 @@ you should just be able to create a virtualenvironment, install dependencies, an
 > python train.py
 > python chat.py
 
+If you have trouble with the requirements.txt, you may have to manually install the torch+cuda dependency:
+> python -m pip install torch==2.0.1+cu118 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 USAGE
 ------------
