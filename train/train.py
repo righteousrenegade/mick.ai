@@ -548,6 +548,7 @@ def generate_training_report(metrics):
     except:
         print("⚠️ Could not generate plots - matplotlib may not be installed")
 
+# This allows the script to be run directly or imported
 if __name__ == "__main__":
     # Set environment variable to force CUDA if needed
     # Uncomment the line below to force CUDA usage

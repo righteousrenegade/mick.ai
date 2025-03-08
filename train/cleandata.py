@@ -17,6 +17,9 @@ def clean_qa_pairs(input_file, output_file):
         print("⚠️ UTF-8 encoding failed, trying latin-1...")
         with open(input_file, 'r', encoding='latin-1') as f:
             text = f.read()
+    except FileNotFoundError:
+        print(f"❌ Input file '{input_file}' not found. Please check the file path.")
+        return False
     
     # First, normalize all potential Q/A markers to standard format
     # This helps with consistent pattern matching later
@@ -229,8 +232,12 @@ def clean_qa_pairs(input_file, output_file):
     
     # Write all pairs to output file
     print(f"💾 Writing cleaned data to {output_file}")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('\n\n'.join(all_pairs))
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n\n'.join(all_pairs))
+    except Exception as e:
+        print(f"❌ Error writing to output file: {str(e)}")
+        return False
     
     # Also create a high-quality subset with only the best examples
     high_quality_pairs = []
@@ -246,9 +253,13 @@ def clean_qa_pairs(input_file, output_file):
     
     # Write high-quality subset
     high_quality_file = output_file.replace('.txt', '_high_quality.txt')
-    with open(high_quality_file, 'w', encoding='utf-8') as f:
-        f.write('\n\n'.join(high_quality_pairs))
-    print(f"💎 Also saved {len(high_quality_pairs)} high-quality pairs to {high_quality_file}")
+    try:
+        with open(high_quality_file, 'w', encoding='utf-8') as f:
+            f.write('\n\n'.join(high_quality_pairs))
+        print(f"💎 Also saved {len(high_quality_pairs)} high-quality pairs to {high_quality_file}")
+    except Exception as e:
+        print(f"❌ Error writing to high-quality output file: {str(e)}")
+        return False
     
     # Print a sample
     if cleaned_pairs:
@@ -256,6 +267,8 @@ def clean_qa_pairs(input_file, output_file):
         print("-" * 50)
         print(cleaned_pairs[0])
         print("-" * 50)
+    
+    return True
 
 def main():
     parser = argparse.ArgumentParser(description='Clean and standardize QA pairs from training data')
@@ -266,5 +279,6 @@ def main():
     
     clean_qa_pairs(args.input, args.output)
 
+# This allows the script to be run directly or imported
 if __name__ == "__main__":
     main() 

@@ -1,26 +1,28 @@
+#!/usr/bin/env python3
+"""
+Chat GUI for JAImes Madison AI - Provides an interface for chatting with the trained model
+"""
+
 import sys
-import torch
-import numpy as np
-import time
 import os
+import torch
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QTextEdit, QLineEdit, QPushButton, 
-                            QTabWidget, QLabel, QComboBox, QSplitter, QFileDialog,
-                            QMessageBox, QProgressBar, QStatusBar, QAction, QMenu, QInputDialog)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt5.QtGui import QFont, QIcon, QTextCursor
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+                            QHBoxLayout, QPushButton, QTextEdit, QLabel, 
+                            QComboBox, QFileDialog, QMessageBox, QSplitter)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QFont, QTextCursor, QIcon
+
+# Try to import the transformers library
+try:
+    from transformers import GPT2LMHeadModel, GPT2Tokenizer
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
 
 class ModelThread(QThread):
-    """Thread for running model inference without blocking the UI"""
-    response_signal = pyqtSignal(str)
-    token_signal = pyqtSignal(str)
-    finished_signal = pyqtSignal()
-    error_signal = pyqtSignal(str)
-    progress_signal = pyqtSignal(int)
+    """Thread for generating responses from the model without blocking the UI"""
+    response_ready = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
     
     def __init__(self, model, tokenizer, prompt, max_length=200, temperature=0.7):
         super().__init__()
@@ -29,589 +31,349 @@ class ModelThread(QThread):
         self.prompt = prompt
         self.max_length = max_length
         self.temperature = temperature
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
+    
     def run(self):
         try:
-            # Encode the prompt
-            inputs = self.tokenizer(self.prompt, return_tensors='pt', padding=True)
-            input_ids = inputs['input_ids'].to(self.device)
-            attention_mask = inputs['attention_mask'].to(self.device)
+            # Prepare the prompt
+            inputs = self.tokenizer.encode(self.prompt, return_tensors="pt")
             
-            # First generate the full response
-            with torch.no_grad():
-                output = self.model.generate(
-                    input_ids,
-                    attention_mask=attention_mask,
-                    max_length=self.max_length + len(input_ids[0]),
-                    temperature=self.temperature,
-                    num_return_sequences=1,
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    do_sample=True,
-                    top_k=50,
-                    top_p=0.95,
-                    min_length=len(input_ids[0]) + 10,
-                    no_repeat_ngram_size=3,
-                    repetition_penalty=1.2,
-                )
+            # Move to the same device as the model
+            device = next(self.model.parameters()).device
+            inputs = inputs.to(device)
             
-            # Get the full generated text
-            full_text = self.tokenizer.decode(output[0], skip_special_tokens=True)
+            # Generate response
+            attention_mask = torch.ones(inputs.shape, device=device)
+            outputs = self.model.generate(
+                inputs,
+                attention_mask=attention_mask,
+                max_length=self.max_length + inputs.shape[1],
+                temperature=self.temperature,
+                top_k=50,
+                top_p=0.95,
+                repetition_penalty=1.2,
+                do_sample=True,
+                num_return_sequences=1,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
             
-            # Extract only the response part (after the prompt)
-            response = full_text[len(self.prompt):].strip()
+            # Decode the response
+            response = self.tokenizer.decode(outputs[0][inputs.shape[1]:], skip_special_tokens=True)
             
-            # Emit the full response for saving
-            self.response_signal.emit(response)
-            
-            # Simulate streaming by emitting character by character
-            for i, char in enumerate(response):
-                self.token_signal.emit(char)
-                # Update progress
-                progress = int((i / len(response)) * 100)
-                self.progress_signal.emit(progress)
-                # Small delay to make the streaming more visible
-                time.sleep(0.01)
-            
-            self.progress_signal.emit(100)
-            self.finished_signal.emit()
-            
+            # Emit the response
+            self.response_ready.emit(response)
         except Exception as e:
-            self.error_signal.emit(str(e))
+            self.error_occurred.emit(str(e))
 
-
-class ActivationVisualizer(QWidget):
-    """Widget for visualizing model activations"""
-    
+class AIModelChat(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setup_ui()
+        self.setWindowTitle("JAImes Madison AI Chat")
+        self.resize(800, 600)
         
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        
-        # Layer selection
-        layer_layout = QHBoxLayout()
-        self.layer_combo = QComboBox()
-        self.layer_combo.addItem("All Layers")
-        layer_layout.addWidget(QLabel("Layer:"))
-        layer_layout.addWidget(self.layer_combo)
-        
-        # Visualization buttons
-        viz_layout = QHBoxLayout()
-        self.visualize_btn = QPushButton("Visualize Current")
-        self.compare_btn = QPushButton("Compare with Saved")
-        self.save_btn = QPushButton("Save Current")
-        viz_layout.addWidget(self.visualize_btn)
-        viz_layout.addWidget(self.compare_btn)
-        viz_layout.addWidget(self.save_btn)
-        
-        # Figure for matplotlib
-        self.figure = Figure(figsize=(8, 6))
-        self.canvas = FigureCanvas(self.figure)
-        
-        # Add all to main layout
-        layout.addLayout(layer_layout)
-        layout.addLayout(viz_layout)
-        layout.addWidget(self.canvas)
-        
-        self.setLayout(layout)
-
-
-class AIModelChat(QMainWindow):
-    """Main application window for the AI chat interface"""
-    
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("AI Chat Interface")
-        self.resize(1000, 800)
-        
-        # Model attributes
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Initialize model and tokenizer
         self.model = None
         self.tokenizer = None
-        self.activations = {}
-        self.hooks = []
-        self.activation_history = {}
-        self.message_history = []
+        self.model_thread = None
         
-        # Setup UI
+        # Set up the UI
         self.setup_ui()
         
-        # Load model
-        self.load_model()
-        
+        # Try to load the model if available
+        if TRANSFORMERS_AVAILABLE:
+            self.try_load_default_model()
+    
     def setup_ui(self):
-        # Central widget and main layout
-        central_widget = QWidget()
-        main_layout = QVBoxLayout(central_widget)
+        # Main layout
+        main_layout = QVBoxLayout()
         
-        # Create tab widget
-        self.tabs = QTabWidget()
+        # Model selection area
+        model_layout = QHBoxLayout()
         
-        # Chat tab
-        chat_widget = QWidget()
-        chat_layout = QVBoxLayout(chat_widget)
+        model_label = QLabel("Model:")
+        model_layout.addWidget(model_label)
+        
+        self.model_path = QComboBox()
+        self.model_path.setEditable(True)
+        
+        # Add default paths
+        default_paths = ["madison_model"]
+        if os.path.exists("madison_model"):
+            default_paths.insert(0, "madison_model")
+        
+        self.model_path.addItems(default_paths)
+        model_layout.addWidget(self.model_path, 1)
+        
+        self.browse_button = QPushButton("Browse")
+        self.browse_button.clicked.connect(self.browse_model)
+        model_layout.addWidget(self.browse_button)
+        
+        self.load_button = QPushButton("Load Model")
+        self.load_button.clicked.connect(self.load_model)
+        model_layout.addWidget(self.load_button)
+        
+        main_layout.addLayout(model_layout)
+        
+        # Chat area
+        chat_splitter = QSplitter(Qt.Vertical)
         
         # Chat history
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
-        self.chat_history.setFont(QFont("Arial", 10))
+        self.chat_history.setStyleSheet("""
+            QTextEdit {
+                background-color: #f8f8f8;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: Arial, sans-serif;
+            }
+        """)
+        chat_splitter.addWidget(self.chat_history)
         
         # Input area
-        input_layout = QHBoxLayout()
-        self.message_input = QLineEdit()
-        self.message_input.setPlaceholderText("Type your message here...")
-        self.message_input.returnPressed.connect(self.send_message)
+        input_widget = QWidget()
+        input_layout = QVBoxLayout(input_widget)
+        
+        # User input
+        self.user_input = QTextEdit()
+        self.user_input.setPlaceholderText("Type your message here...")
+        self.user_input.setMinimumHeight(100)
+        self.user_input.setMaximumHeight(150)
+        self.user_input.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: Arial, sans-serif;
+            }
+        """)
+        input_layout.addWidget(self.user_input)
+        
+        # Controls
+        controls_layout = QHBoxLayout()
+        
+        self.clear_button = QPushButton("Clear Chat")
+        self.clear_button.clicked.connect(self.clear_chat)
+        controls_layout.addWidget(self.clear_button)
+        
+        controls_layout.addStretch()
+        
+        self.temperature_label = QLabel("Temperature:")
+        controls_layout.addWidget(self.temperature_label)
+        
+        self.temperature = QComboBox()
+        self.temperature.addItems(["0.5", "0.7", "0.9", "1.0", "1.2"])
+        self.temperature.setCurrentText("0.7")
+        controls_layout.addWidget(self.temperature)
+        
+        self.max_length_label = QLabel("Max Length:")
+        controls_layout.addWidget(self.max_length_label)
+        
+        self.max_length = QComboBox()
+        self.max_length.addItems(["100", "200", "300", "500", "1000"])
+        self.max_length.setCurrentText("200")
+        controls_layout.addWidget(self.max_length)
+        
         self.send_button = QPushButton("Send")
         self.send_button.clicked.connect(self.send_message)
+        self.send_button.setEnabled(False)  # Disabled until model is loaded
+        controls_layout.addWidget(self.send_button)
         
-        input_layout.addWidget(self.message_input)
-        input_layout.addWidget(self.send_button)
+        input_layout.addLayout(controls_layout)
+        chat_splitter.addWidget(input_widget)
         
-        # Progress bar for generation
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
+        # Set initial sizes
+        chat_splitter.setSizes([400, 200])
         
-        # Add widgets to chat layout
-        chat_layout.addWidget(self.chat_history)
-        chat_layout.addLayout(input_layout)
-        chat_layout.addWidget(self.progress_bar)
-        
-        # Visualization tab
-        self.viz_widget = ActivationVisualizer()
-        
-        # Add tabs
-        self.tabs.addTab(chat_widget, "Chat")
-        self.tabs.addTab(self.viz_widget, "Visualizations")
-        
-        # Add tabs to main layout
-        main_layout.addWidget(self.tabs)
+        main_layout.addWidget(chat_splitter)
         
         # Status bar
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready")
+        self.status_bar = QLabel("Model not loaded")
+        self.status_bar.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border-top: 1px solid #ddd;
+                padding: 5px;
+            }
+        """)
+        main_layout.addWidget(self.status_bar)
         
-        # Menu bar
-        self.setup_menu()
+        self.setLayout(main_layout)
         
-        # Set central widget
-        self.setCentralWidget(central_widget)
-        
-        # Connect signals
-        self.viz_widget.visualize_btn.clicked.connect(self.visualize_activations)
-        self.viz_widget.compare_btn.clicked.connect(self.compare_activations)
-        self.viz_widget.save_btn.clicked.connect(self.save_activations)
+        # Connect enter key to send message
+        self.user_input.installEventFilter(self)
     
-    def setup_menu(self):
-        # Create menu bar
-        menu_bar = self.menuBar()
-        
-        # File menu
-        file_menu = menu_bar.addMenu("File")
-        
-        # Load model action
-        load_model_action = QAction("Load Model", self)
-        load_model_action.triggered.connect(self.load_custom_model)
-        file_menu.addAction(load_model_action)
-        
-        # Export chat history
-        export_action = QAction("Export Chat History", self)
-        export_action.triggered.connect(self.export_chat_history)
-        file_menu.addAction(export_action)
-        
-        # Exit action
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        
-        # Settings menu
-        settings_menu = menu_bar.addMenu("Settings")
-        
-        # Model settings
-        model_settings_action = QAction("Model Settings", self)
-        model_settings_action.triggered.connect(self.show_model_settings)
-        settings_menu.addAction(model_settings_action)
-        
-        # Help menu
-        help_menu = menu_bar.addMenu("Help")
-        
-        # About action
-        about_action = QAction("About", self)
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
+    def eventFilter(self, obj, event):
+        if obj is self.user_input and event.type() == event.KeyPress:
+            if event.key() == Qt.Key_Return and event.modifiers() == Qt.ControlModifier:
+                self.send_message()
+                return True
+        return super().eventFilter(obj, event)
     
-    def load_model(self, model_path=None, tokenizer_path=None, model_size='gpt2-medium'):
-        """Load the AI model"""
+    def try_load_default_model(self):
+        """Try to load the default model if it exists"""
+        if os.path.exists("madison_model") and os.path.exists("madison_tokenizer"):
+            self.load_model_from_path("madison_model")
+        elif os.path.exists("madison_model"):
+            self.load_model_from_path("madison_model")
+    
+    def browse_model(self):
+        """Open a file dialog to select a model directory"""
+        model_dir = QFileDialog.getExistingDirectory(self, "Select Model Directory")
+        if model_dir:
+            self.model_path.setCurrentText(model_dir)
+    
+    def load_model(self):
+        """Load the model from the specified path"""
+        model_path = self.model_path.currentText()
+        self.load_model_from_path(model_path)
+    
+    def load_model_from_path(self, model_path):
+        """Load the model and tokenizer from the specified path"""
+        if not TRANSFORMERS_AVAILABLE:
+            QMessageBox.critical(self, "Error", "The transformers library is not installed. Please install it with pip install transformers.")
+            return
+        
         try:
-            self.status_bar.showMessage("Loading model...")
+            self.status_bar.setText("Loading model...")
             QApplication.processEvents()
             
-            # Load tokenizer
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2-medium')
+            # Check if the model path exists
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"Model path {model_path} does not exist")
+            
+            # Load the model and tokenizer
+            self.model = GPT2LMHeadModel.from_pretrained(model_path)
+            
+            # Try to load the tokenizer from the same directory or a tokenizer directory
+            tokenizer_path = model_path
+            if os.path.exists(os.path.join(model_path, "tokenizer")):
+                tokenizer_path = os.path.join(model_path, "tokenizer")
+            elif os.path.exists("madison_tokenizer"):
+                tokenizer_path = "madison_tokenizer"
+            
+            self.tokenizer = GPT2Tokenizer.from_pretrained(tokenizer_path)
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            # Load model
-            if model_path and os.path.exists(model_path):
-                # Load custom model
-                self.model = GPT2LMHeadModel.from_pretrained(model_size).to(self.device)
-                
-                # Try loading from safetensors format first
-                try:
-                    from safetensors.torch import load_file
-                    
-                    safetensors_path = f"{model_path}/model.safetensors"
-                    pytorch_path = f"{model_path}/pytorch_model.bin"
-                    
-                    if os.path.exists(safetensors_path):
-                        state_dict = load_file(safetensors_path)
-                        
-                        # Check if lm_head.weight is missing and add it if needed
-                        if "lm_head.weight" not in state_dict and "transformer.wte.weight" in state_dict:
-                            state_dict["lm_head.weight"] = state_dict["transformer.wte.weight"]
-                        
-                        # Load state dict with strict=False to allow partial loading
-                        missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
-                    elif os.path.exists(pytorch_path):
-                        state_dict = torch.load(pytorch_path, map_location=self.device)
-                        missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
-                    else:
-                        raise FileNotFoundError(f"No model file found at {model_path}")
-                        
-                except Exception as e:
-                    self.status_bar.showMessage(f"Error loading custom model: {str(e)}")
-                    # Fall back to base model
-                    self.model = GPT2LMHeadModel.from_pretrained(model_size).to(self.device)
-            else:
-                # Load base model
-                self.model = GPT2LMHeadModel.from_pretrained(model_size).to(self.device)
+            # Move model to GPU if available
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model.to(device)
             
-            # Register hooks for activations
-            self._register_hooks()
+            # Enable the send button
+            self.send_button.setEnabled(True)
             
-            # Update UI
-            self.status_bar.showMessage(f"Model loaded: {model_size}")
-            self.add_system_message("AI Assistant is ready. How can I help you today?")
+            # Update status
+            self.status_bar.setText(f"Model loaded from {model_path} (Device: {device})")
+            
+            # Add a welcome message
+            self.chat_history.append("<b>JAImes Madison:</b> Greetings! I am JAImes Madison, primary architect of the U.S. Constitution and fourth President of the United States. How may I assist you today?")
             
         except Exception as e:
-            self.status_bar.showMessage(f"Error loading model: {str(e)}")
             QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
-    
-    def _register_hooks(self):
-        """Register hooks to capture model activations"""
-        # Clear existing hooks
-        self._remove_hooks()
-        self.activations = {}
-        
-        # Define hook function
-        def hook_fn(name):
-            def hook(module, input, output):
-                # Handle both tuple and tensor outputs
-                if isinstance(output, tuple):
-                    self.activations[name] = output[0].detach().cpu().numpy()
-                else:
-                    self.activations[name] = output.detach().cpu().numpy()
-            return hook
-        
-        # Register hooks for all layers
-        for name, module in self.model.named_modules():
-            if any(layer_type in name for layer_type in ['h.', 'mlp', 'attn']):
-                hook = module.register_forward_hook(hook_fn(name))
-                self.hooks.append(hook)
-                
-                # Add layer to the visualization combo box
-                if name not in [self.viz_widget.layer_combo.itemText(i) for i in range(self.viz_widget.layer_combo.count())]:
-                    self.viz_widget.layer_combo.addItem(name)
-    
-    def _remove_hooks(self):
-        """Remove all registered hooks"""
-        for hook in self.hooks:
-            hook.remove()
-        self.hooks = []
+            self.status_bar.setText(f"Error loading model: {str(e)}")
     
     def send_message(self):
-        """Process user message and generate response"""
-        user_message = self.message_input.text().strip()
+        """Send the user's message to the model and get a response"""
+        if self.model is None or self.tokenizer is None:
+            QMessageBox.warning(self, "Model Not Loaded", "Please load a model first.")
+            return
+        
+        # Get the user's message
+        user_message = self.user_input.toPlainText().strip()
         if not user_message:
             return
         
-        # Clear input field
-        self.message_input.clear()
-        
-        # Add user message to chat history
-        self.add_user_message(user_message)
-        
-        # Handle special commands
-        if user_message.lower() in ['quit', 'exit']:
-            self.close()
-            return
-        
-        if user_message.lower() == 'clear':
-            self.chat_history.clear()
-            self.message_history = []
-            self.add_system_message("Chat history cleared.")
-            return
-        
-        # Prepare for AI response
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        # Disable the send button while generating
         self.send_button.setEnabled(False)
-        self.status_bar.showMessage("Generating response...")
+        self.status_bar.setText("Generating response...")
         
-        # Prepare prompt
-        context = ""
-        prompt = f"{context}Question: {user_message}\nAnswer:"
+        # Display the user's message
+        self.chat_history.append(f"<b>You:</b> {user_message}")
         
-        # Create and start thread for model inference
-        self.thread = ModelThread(self.model, self.tokenizer, prompt)
-        self.thread.token_signal.connect(self.update_response)
-        self.thread.response_signal.connect(self.save_response)
-        self.thread.finished_signal.connect(self.on_generation_finished)
-        self.thread.error_signal.connect(self.on_generation_error)
-        self.thread.progress_signal.connect(self.progress_bar.setValue)
-        self.thread.start()
+        # Clear the input field
+        self.user_input.clear()
         
-        # Prepare for streaming response
-        self.current_response = ""
-        self.add_ai_message_start()
+        # Prepare the prompt
+        # Format: Previous conversation + new user message
+        conversation_history = self.get_conversation_history()
+        prompt = f"{conversation_history}You: {user_message}\n\nJAImes Madison:"
+        
+        # Get parameters
+        temperature = float(self.temperature.currentText())
+        max_length = int(self.max_length.currentText())
+        
+        # Generate response in a separate thread
+        self.model_thread = ModelThread(
+            self.model, 
+            self.tokenizer, 
+            prompt, 
+            max_length=max_length, 
+            temperature=temperature
+        )
+        self.model_thread.response_ready.connect(self.handle_response)
+        self.model_thread.error_occurred.connect(self.handle_error)
+        self.model_thread.start()
     
-    def update_response(self, token):
-        """Update the AI response with a new token"""
-        self.current_response += token
-        self.update_last_message(self.current_response)
+    def get_conversation_history(self):
+        """Extract the conversation history from the chat history widget"""
+        # This is a simple implementation that works for short conversations
+        # For longer conversations, you might need to implement a more sophisticated approach
+        # that keeps track of the conversation history separately
+        history_text = self.chat_history.toPlainText()
+        
+        # Limit the history to the last 5 exchanges to avoid context length issues
+        lines = history_text.split('\n')
+        if len(lines) > 10:  # Roughly 5 exchanges (user + model)
+            lines = lines[-10:]
+            history_text = '\n'.join(lines)
+        
+        # Format the history
+        history = history_text.replace("You:", "You:").replace("JAImes Madison:", "JAImes Madison:")
+        
+        if history:
+            return history + "\n\n"
+        return ""
     
-    def save_response(self, response):
-        """Save the complete response"""
-        self.complete_response = response
-    
-    def on_generation_finished(self):
-        """Handle completion of response generation"""
-        self.progress_bar.setVisible(False)
+    def handle_response(self, response):
+        """Handle the response from the model"""
+        # Clean up the response
+        response = response.strip()
+        
+        # Display the response
+        self.chat_history.append(f"<b>JAImes Madison:</b> {response}")
+        
+        # Scroll to the bottom
+        self.chat_history.moveCursor(QTextCursor.End)
+        
+        # Re-enable the send button
         self.send_button.setEnabled(True)
-        self.status_bar.showMessage("Ready")
-        
-        # Add the complete message to history
-        self.message_history.append({"role": "assistant", "content": self.complete_response})
+        self.status_bar.setText("Ready")
     
-    def on_generation_error(self, error_msg):
-        """Handle errors during generation"""
-        self.progress_bar.setVisible(False)
+    def handle_error(self, error_message):
+        """Handle errors during response generation"""
+        QMessageBox.critical(self, "Error", f"Error generating response: {error_message}")
+        self.chat_history.append("<i>Error generating response. Please try again.</i>")
         self.send_button.setEnabled(True)
-        self.status_bar.showMessage(f"Error: {error_msg}")
-        self.add_system_message(f"Error generating response: {error_msg}")
+        self.status_bar.setText(f"Error: {error_message}")
     
-    def add_user_message(self, message):
-        """Add a user message to the chat history"""
-        self.chat_history.append(f"<p style='color:#0066cc'><b>You:</b> {message}</p>")
-        self.message_history.append({"role": "user", "content": message})
-    
-    def add_ai_message_start(self):
-        """Start a new AI message in the chat history"""
-        self.chat_history.append(f"<p style='color:#006600'><b>AI Assistant:</b> </p>")
-        # Don't add to message history yet - will be added when complete
-    
-    def update_last_message(self, message):
-        """Update the last message in the chat history"""
-        cursor = self.chat_history.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
-        cursor.removeSelectedText()
-        cursor.insertHtml(f"<p style='color:#006600'><b>AI Assistant:</b> {message}</p>")
-        self.chat_history.ensureCursorVisible()
-    
-    def add_system_message(self, message):
-        """Add a system message to the chat history"""
-        self.chat_history.append(f"<p style='color:#999999'><i>System: {message}</i></p>")
-    
-    def visualize_activations(self):
-        """Visualize current activations"""
-        if not self.activations:
-            QMessageBox.warning(self, "Warning", "No activations available. Send a message first.")
-            return
-        
-        try:
-            layer_name = self.viz_widget.layer_combo.currentText()
-            if layer_name == "All Layers":
-                layer_name = None
-            
-            # Clear the figure
-            self.viz_widget.figure.clear()
-            
-            # Create visualization
-            if layer_name and layer_name in self.activations:
-                # Visualize specific layer
-                ax = self.viz_widget.figure.add_subplot(111)
-                act = self.activations[layer_name]
-                
-                try:
-                    if len(act.shape) > 2:
-                        # For attention layers, show heatmap of first head
-                        if 'attn' in layer_name:
-                            try:
-                                im = ax.imshow(act[0, 0], cmap='viridis')
-                                ax.set_title(f"Attention Pattern: {layer_name}")
-                                self.viz_widget.figure.colorbar(im, ax=ax)
-                            except (IndexError, TypeError) as e:
-                                # Fall back to mean activation if we can't show the first head
-                                self.status_bar.showMessage(f"Error showing attention pattern: {str(e)}")
-                                mean_act = np.mean(act, axis=tuple(range(len(act.shape)-1)))
-                                ax.plot(mean_act)
-                                ax.set_title(f"Mean Activation: {layer_name}")
-                        else:
-                            # For other layers with >2 dims, show mean activation
-                            mean_act = np.mean(act, axis=tuple(range(len(act.shape)-1)))
-                            ax.plot(mean_act)
-                            ax.set_title(f"Mean Activation: {layer_name}")
-                    elif len(act.shape) == 2:
-                        # For 2D activations, show heatmap
-                        im = ax.imshow(act, cmap='viridis')
-                        ax.set_title(f"Activation: {layer_name}")
-                        self.viz_widget.figure.colorbar(im, ax=ax)
-                    else:
-                        # For 1D activations, either plot as line or reshape to 2D
-                        if act.shape[0] > 1000:
-                            # Try to make a square-ish 2D array for visualization
-                            side = int(np.sqrt(act.shape[0]))
-                            reshaped = act[:side*side].reshape(side, side)
-                            im = ax.imshow(reshaped, cmap='viridis')
-                            ax.set_title(f"Activation (Reshaped): {layer_name}")
-                            self.viz_widget.figure.colorbar(im, ax=ax)
-                        else:
-                            # Just plot as a line
-                            ax.plot(act)
-                            ax.set_title(f"Activation: {layer_name}")
-                except Exception as e:
-                    # If all else fails, just show the shape and some stats
-                    self.status_bar.showMessage(f"Error visualizing layer: {str(e)}")
-                    ax.text(0.5, 0.5, f"Layer: {layer_name}\nShape: {act.shape}\n"
-                            f"Mean: {np.mean(act):.4f}\nStd: {np.std(act):.4f}\n"
-                            f"Min: {np.min(act):.4f}\nMax: {np.max(act):.4f}",
-                            ha='center', va='center', transform=ax.transAxes)
-                    ax.set_title(f"Layer Statistics: {layer_name}")
-                    ax.axis('off')
-            else:
-                # Visualize summary of all layers
-                try:
-                    # Just show a bar chart of activation magnitudes
-                    layer_names = []
-                    magnitudes = []
-                    
-                    for name, act in self.activations.items():
-                        if isinstance(act, np.ndarray):
-                            layer_names.append(name.split('.')[-1])
-                            magnitudes.append(np.mean(np.abs(act)))
-                    
-                    if layer_names:
-                        ax = self.viz_widget.figure.add_subplot(111)
-                        ax.bar(range(len(layer_names)), magnitudes)
-                        ax.set_xticks(range(len(layer_names)))
-                        ax.set_xticklabels(layer_names, rotation=90)
-                        ax.set_title("Mean Activation Magnitude Across Layers")
-                        ax.set_ylabel("Mean Absolute Activation")
-                        self.viz_widget.figure.tight_layout()
-                    else:
-                        ax = self.viz_widget.figure.add_subplot(111)
-                        ax.text(0.5, 0.5, "No valid activations found", 
-                                ha='center', va='center', transform=ax.transAxes)
-                        ax.axis('off')
-                except Exception as e:
-                    self.status_bar.showMessage(f"Error creating summary visualization: {str(e)}")
-                    ax = self.viz_widget.figure.add_subplot(111)
-                    ax.text(0.5, 0.5, f"Error creating visualization:\n{str(e)}", 
-                            ha='center', va='center', transform=ax.transAxes)
-                    ax.axis('off')
-            
-            # Refresh canvas
-            self.viz_widget.canvas.draw()
-            
-        except Exception as e:
-            self.status_bar.showMessage(f"Visualization error: {str(e)}")
-            QMessageBox.warning(self, "Visualization Error", 
-                               f"An error occurred while visualizing activations:\n{str(e)}")
-    
-    def compare_activations(self):
-        """Compare current activations with saved ones"""
-        if not self.activation_history:
-            QMessageBox.warning(self, "Warning", "No saved activations to compare with.")
-            return
-        
-        # TODO: Implement comparison visualization
-        QMessageBox.information(self, "Info", "Activation comparison not implemented yet.")
-    
-    def save_activations(self):
-        """Save current activations"""
-        if not self.activations:
-            QMessageBox.warning(self, "Warning", "No activations to save. Send a message first.")
-            return
-        
-        # Get label from user
-        label, ok = QInputDialog.getText(self, "Save Activations", "Enter a label for these activations:")
-        if ok and label:
-            import copy
-            self.activation_history[label] = copy.deepcopy(self.activations)
-            self.status_bar.showMessage(f"Saved activations as '{label}'")
-    
-    def load_custom_model(self):
-        """Load a custom model from file"""
-        model_dir = QFileDialog.getExistingDirectory(self, "Select Model Directory")
-        if model_dir:
-            # Ask for model size
-            model_sizes = ["gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"]
-            model_size, ok = QInputDialog.getItem(self, "Select Model Size", 
-                                                "Base model size:", model_sizes, 1, False)
-            if ok and model_size:
-                self.load_model(model_path=model_dir, model_size=model_size)
-    
-    def export_chat_history(self):
-        """Export chat history to a file"""
-        if not self.message_history:
-            QMessageBox.warning(self, "Warning", "No chat history to export.")
-            return
-        
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export Chat History", "", 
-                                                "Text Files (*.txt);;JSON Files (*.json)")
-        if not file_path:
-            return
-        
-        try:
-            if file_path.endswith('.json'):
-                import json
-                with open(file_path, 'w') as f:
-                    json.dump(self.message_history, f, indent=2)
-            else:
-                with open(file_path, 'w') as f:
-                    for msg in self.message_history:
-                        f.write(f"{msg['role'].capitalize()}: {msg['content']}\n\n")
-            
-            self.status_bar.showMessage(f"Chat history exported to {file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to export chat history: {str(e)}")
-    
-    def show_model_settings(self):
-        """Show dialog for model settings"""
-        # TODO: Implement settings dialog
-        QMessageBox.information(self, "Info", "Model settings dialog not implemented yet.")
-    
-    def show_about(self):
-        """Show about dialog"""
-        QMessageBox.about(self, "About AI Chat Interface", 
-                        "AI Chat Interface\n\n"
-                        "A GUI application for interacting with GPT-2 based language models.\n\n"
-                        "Features:\n"
-                        "- Chat with AI assistant\n"
-                        "- Visualize model activations\n"
-                        "- Save and compare activation patterns\n")
-    
-    def closeEvent(self, event):
-        """Handle window close event"""
-        # Clean up resources
-        self._remove_hooks()
-        event.accept()
+    def clear_chat(self):
+        """Clear the chat history"""
+        self.chat_history.clear()
+        self.chat_history.append("<b>JAImes Madison:</b> Greetings! I am JAImes Madison, primary architect of the U.S. Constitution and fourth President of the United States. How may I assist you today?")
 
+class ChatMainWindow(QMainWindow):
+    """Main window for the chat application when run standalone"""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("JAImes Madison AI Chat")
+        self.resize(800, 600)
+        
+        # Create the chat widget
+        self.chat_widget = AIModelChat()
+        self.setCentralWidget(self.chat_widget)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = AIModelChat()
+    window = ChatMainWindow()
     window.show()
     sys.exit(app.exec_()) 
