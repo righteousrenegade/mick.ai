@@ -20,7 +20,7 @@ If you are starting from scratch to train a model, you will generally use the ab
 
 INSTALLATION
 -------------
-you should just be able to create a virtualenvironment, install dependencies, and train away.
+You should just be able to create a virtualenvironment, install dependencies, and train away. For convenience, I've included the `cleaned_trainintdata_high_quality.txt` file which is a Q/A formatted dataset about the Federalist Papers (All copied from my JAImes Madison project, also on github). This dataset can be run out of the box to see the training in action. then you can use the output of that training run immediately with the `chat.py` file.
 
 > python3 -m venv venv
 > pip install -r requirements.txt
