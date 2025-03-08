@@ -6,4 +6,4 @@ Mick.AI is named after Mickey Goldmill, from the Rocky movies. He was a legendar
 
 Features/Capabilities for now will be separated into top-level directories. Each feature will have its own README to explain how to use it.
 
-See the [Trainer README](train\README.md) for instructions on how to install and use the trainer scripts.
+See the [Trainer README](train/README.md) for instructions on how to install and use the trainer scripts.
