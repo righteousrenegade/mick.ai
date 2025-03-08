@@ -8,7 +8,7 @@ import os
 import torch
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QTextEdit, QLabel, 
-                            QComboBox, QFileDialog, QMessageBox, QSplitter)
+                            QComboBox, QFileDialog, QMessageBox, QSplitter, QSizePolicy)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QFont, QTextCursor, QIcon
 
@@ -70,6 +70,12 @@ class AIModelChat(QWidget):
         self.setWindowTitle("JAImes Madison AI Chat")
         self.resize(800, 600)
         
+        # Set size policy to allow the widget to resize properly when embedded
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Remove any minimum size constraints
+        self.setMinimumHeight(100)
+        
         # Initialize model and tokenizer
         self.model = None
         self.tokenizer = None
@@ -85,9 +91,13 @@ class AIModelChat(QWidget):
     def setup_ui(self):
         # Main layout
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(5, 5, 5, 5)  # Reduce margins to save space
+        main_layout.setSpacing(5)  # Reduce spacing between elements
         
-        # Model selection area
+        # Model selection area - make more compact
         model_layout = QHBoxLayout()
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(5)
         
         model_label = QLabel("Model:")
         model_layout.addWidget(model_label)
@@ -115,6 +125,7 @@ class AIModelChat(QWidget):
         
         # Chat area
         chat_splitter = QSplitter(Qt.Vertical)
+        chat_splitter.setChildrenCollapsible(True)  # Allow children to be collapsed
         
         # Chat history
         self.chat_history = QTextEdit()
@@ -128,16 +139,20 @@ class AIModelChat(QWidget):
                 font-family: Arial, sans-serif;
             }
         """)
+        # Allow chat history to be resized smaller
+        self.chat_history.setMinimumHeight(50)
         chat_splitter.addWidget(self.chat_history)
         
         # Input area
         input_widget = QWidget()
         input_layout = QVBoxLayout(input_widget)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(5)
         
         # User input
         self.user_input = QTextEdit()
         self.user_input.setPlaceholderText("Type your message here...")
-        self.user_input.setMinimumHeight(100)
+        self.user_input.setMinimumHeight(40)  # Reduce minimum height
         self.user_input.setMaximumHeight(150)
         self.user_input.setStyleSheet("""
             QTextEdit {
@@ -151,6 +166,7 @@ class AIModelChat(QWidget):
         
         # Controls
         controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(5)
         
         self.clear_button = QPushButton("Clear Chat")
         self.clear_button.clicked.connect(self.clear_chat)
@@ -183,19 +199,21 @@ class AIModelChat(QWidget):
         chat_splitter.addWidget(input_widget)
         
         # Set initial sizes
-        chat_splitter.setSizes([400, 200])
+        chat_splitter.setSizes([300, 100])
         
         main_layout.addWidget(chat_splitter)
         
-        # Status bar
+        # Status bar - make more compact
         self.status_bar = QLabel("Model not loaded")
         self.status_bar.setStyleSheet("""
             QLabel {
                 background-color: #f0f0f0;
                 border-top: 1px solid #ddd;
-                padding: 5px;
+                padding: 2px;
+                font-size: 10px;
             }
         """)
+        self.status_bar.setMaximumHeight(20)
         main_layout.addWidget(self.status_bar)
         
         self.setLayout(main_layout)
@@ -361,6 +379,10 @@ class AIModelChat(QWidget):
         self.chat_history.clear()
         self.chat_history.append("<b>JAImes Madison:</b> Greetings! I am JAImes Madison, primary architect of the U.S. Constitution and fourth President of the United States. How may I assist you today?")
 
+    def get_current_query(self):
+        """Get the current query text from the input box"""
+        return self.user_input.toPlainText()
+
 class ChatMainWindow(QMainWindow):
     """Main window for the chat application when run standalone"""
     def __init__(self):
@@ -371,6 +393,99 @@ class ChatMainWindow(QMainWindow):
         # Create the chat widget
         self.chat_widget = AIModelChat()
         self.setCentralWidget(self.chat_widget)
+
+# Add this function to enable activation data capture for visualization
+def get_model_activation_data(query_text):
+    """
+    Extracts activation data from the model for a given query.
+    
+    Args:
+        query_text (str): The text query to process through the model
+        
+    Returns:
+        dict: A dictionary containing various activation data arrays:
+            - 'attention_weights': Attention weights across layers and heads
+            - 'hidden_states': Hidden state activations across layers
+            - 'token_embeddings': Token embedding vectors
+    """
+    try:
+        import numpy as np
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        
+        # Load the model and tokenizer - use the same model as in AIModelChat
+        model_path = "./models/jaimes-madison"
+        
+        # Check if the model exists locally, otherwise use a default model
+        if not os.path.exists(model_path):
+            print(f"Model not found at {model_path}, using default model")
+            model_name = "gpt2-medium"  # Use a smaller default model
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            model = AutoModelForCausalLM.from_pretrained(model_name, output_attentions=True, output_hidden_states=True)
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
+            model = AutoModelForCausalLM.from_pretrained(model_path, output_attentions=True, output_hidden_states=True)
+        
+        # Tokenize the input
+        inputs = tokenizer(query_text, return_tensors="pt")
+        
+        # Run the model with attention and hidden states output
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        # Extract the activation data
+        activation_data = {}
+        
+        # Get attention weights (shape: [layers, heads, seq_len, seq_len])
+        if outputs.attentions:
+            # Convert tuple of tensors to a single numpy array
+            attention_weights = torch.stack(outputs.attentions).cpu().numpy()
+            activation_data['attention_weights'] = attention_weights
+        
+        # Get hidden states (shape: [layers, seq_len, hidden_size])
+        if outputs.hidden_states:
+            # Convert tuple of tensors to a single numpy array
+            hidden_states = torch.stack(outputs.hidden_states).cpu().numpy()
+            activation_data['hidden_states'] = hidden_states
+        
+        # Get token embeddings (first layer of hidden states)
+        if outputs.hidden_states:
+            token_embeddings = outputs.hidden_states[0].cpu().numpy()
+            activation_data['token_embeddings'] = token_embeddings
+        
+        # Add token information for reference
+        tokens = tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
+        activation_data['tokens'] = np.array(tokens, dtype=str)
+        
+        return activation_data
+        
+    except Exception as e:
+        print(f"Error extracting activation data: {str(e)}")
+        # Return some dummy data for testing if the real extraction fails
+        return create_dummy_activation_data(query_text)
+
+def create_dummy_activation_data(query_text):
+    """Create dummy activation data for testing when the model is not available"""
+    import numpy as np
+    
+    # Simulate a small model with 4 layers, 4 heads, and tokenized query
+    tokens = query_text.split()
+    seq_len = len(tokens)
+    
+    # Ensure we have at least 2 tokens for attention visualization
+    if seq_len < 2:
+        tokens = ["<s>"] + tokens
+        seq_len = len(tokens)
+    
+    # Create dummy data
+    dummy_data = {
+        'attention_weights': np.random.rand(4, 4, seq_len, seq_len),  # [layers, heads, seq_len, seq_len]
+        'hidden_states': np.random.rand(4, seq_len, 768),  # [layers, seq_len, hidden_size]
+        'token_embeddings': np.random.rand(seq_len, 768),  # [seq_len, hidden_size]
+        'tokens': np.array(tokens, dtype=str)
+    }
+    
+    return dummy_data
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

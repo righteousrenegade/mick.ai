@@ -180,18 +180,35 @@ def check_cuda_availability():
         print("⚠️ Using CPU for training (this will be slow)")
         return torch.device('cpu'), False
 
-def train_model(model_name='gpt2-medium', num_epochs=5, batch_size=4, learning_rate=5e-6, display_qa_pairs=False, use_high_quality=True):
+def train_model(model_name="gpt2-medium", num_epochs=5, batch_size=4, learning_rate=5e-6, 
+              display_qa_pairs=False, use_high_quality=True, input_file=None):
     """
-    Train a GPT-2 model on Madison Q&A pairs.
+    Train the model on the cleaned training data.
     
     Args:
-        model_name: The pretrained model to start with
-        num_epochs: Number of training epochs
-        batch_size: Batch size for training
-        learning_rate: Learning rate (reduced to 5e-6 for better quality)
-        display_qa_pairs: Whether to display Q&A pairs during training
-        use_high_quality: Whether to use the high-quality dataset
+        model_name (str): Name of the pretrained model to use
+        num_epochs (int): Number of training epochs
+        batch_size (int): Batch size for training
+        learning_rate (float): Learning rate for training
+        display_qa_pairs (bool): Whether to display the QA pairs during training
+        use_high_quality (bool): Whether to use the high quality dataset
+        input_file (str, optional): Path to the input training file. If None, uses default based on use_high_quality.
     """
+    # If input_file is provided, use it; otherwise use default based on use_high_quality
+    if input_file is None:
+        # Check if TRAINING_FILE environment variable is set
+        import os
+        input_file = os.environ.get('TRAINING_FILE')
+        
+        # If still None, use default based on use_high_quality
+        if input_file is None:
+            if use_high_quality:
+                input_file = "cleaned_trainingdata_high_quality.txt"
+            else:
+                input_file = "cleaned_trainingdata.txt"
+    
+    print(f"Using training file: {input_file}")
+    
     # Initialize training metrics collection
     training_metrics = {
         'epochs': [],
@@ -238,32 +255,9 @@ def train_model(model_name='gpt2-medium', num_epochs=5, batch_size=4, learning_r
 
     # Prepare dataset and dataloader
     print("📚 Loading and preparing dataset...")
-    data_file = None
+    full_dataset = TextDataset(input_file, tokenizer)
     
-    if use_high_quality:
-        try:
-            data_file = 'cleaned_trainingdata_high_quality.txt'
-            print(f"🌟 Using high-quality dataset: {data_file}")
-            full_dataset = TextDataset(data_file, tokenizer)
-        except FileNotFoundError:
-            print("⚠️ High-quality dataset not found, falling back to standard cleaned data...")
-            try:
-                data_file = 'cleaned_trainingdata.txt'
-                full_dataset = TextDataset(data_file, tokenizer)
-            except FileNotFoundError:
-                print("⚠️ cleaned_trainingdata.txt not found, trying trainingdata2.txt...")
-                data_file = 'trainingdata2.txt'
-                full_dataset = TextDataset(data_file, tokenizer)
-    else:
-        try:
-            data_file = 'cleaned_trainingdata.txt'
-            full_dataset = TextDataset(data_file, tokenizer)
-        except FileNotFoundError:
-            print("⚠️ cleaned_trainingdata.txt not found, trying trainingdata2.txt...")
-            data_file = 'trainingdata2.txt'
-            full_dataset = TextDataset(data_file, tokenizer)
-    
-    training_metrics['training_info']['data_file'] = data_file
+    training_metrics['training_info']['data_file'] = input_file
     training_metrics['training_info']['dataset_size'] = len(full_dataset)
     training_metrics['training_info']['use_high_quality'] = use_high_quality
     

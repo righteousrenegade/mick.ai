@@ -3,8 +3,10 @@ import json
 import time
 from tqdm import tqdm
 import re
+import argparse
 from openai import OpenAI
 from datetime import datetime
+import os
 
 # Configure OpenAI client to use local endpoint
 client = OpenAI(
@@ -39,8 +41,20 @@ def test_api_connection():
             print(f"❌ Could not list models: {str(e2)}")
             return False
 
-def chunk_text(text, max_tokens=2000):
-    """Split text into meaningful chunks by paragraphs and arguments."""
+def chunk_text(text, max_tokens=2000, auto_chunk=True, chunk_size=None, overlap=0.2):
+    """
+    Split text into meaningful chunks by paragraphs and arguments.
+    
+    Args:
+        text (str): The text to chunk
+        max_tokens (int, optional): Maximum tokens per chunk when using auto-chunking
+        auto_chunk (bool, optional): Whether to use automatic chunking based on token count
+        chunk_size (int, optional): Custom chunk size in characters (used when auto_chunk is False)
+        overlap (float, optional): Fraction of overlap between chunks (0.0 to 1.0)
+    
+    Returns:
+        list: List of text chunks
+    """
     # More flexible pattern matching
     patterns = [
         r'(?i)(federalist\.?\s*(?:no\.?|number\.?)?\s*\d+)',  # Matches various "Federalist No." formats
@@ -59,8 +73,21 @@ def chunk_text(text, max_tokens=2000):
         print("❌ No papers found with any pattern!")
         print("\n📄 First 200 characters of text:")
         print(text[:200])
-        return []
+        
+        # If no patterns match, fall back to simple paragraph-based chunking
+        print("\n⚠️ Falling back to paragraph-based chunking...")
+        paragraphs = text.split('\n\n')
+        return chunk_paragraphs(paragraphs, max_tokens, auto_chunk, chunk_size, overlap)
     
+    # If we're using custom chunking instead of paper-based chunking
+    if not auto_chunk and chunk_size is not None:
+        print(f"\n📏 Using custom chunk size: {chunk_size} characters with {overlap*100}% overlap")
+        # Convert the entire text to paragraphs and use paragraph chunking
+        all_text = ' '.join(papers)
+        paragraphs = all_text.split('\n\n')
+        return chunk_paragraphs(paragraphs, max_tokens, auto_chunk, chunk_size, overlap)
+    
+    # Otherwise, proceed with paper-based chunking
     chunks = []
     current_chunk = []
     current_length = 0
@@ -106,6 +133,74 @@ def chunk_text(text, max_tokens=2000):
             chunks.append(chunk_text)
             print(f"   Created single chunk of length: {len(chunk_text)} characters")
     
+    return chunks
+
+def chunk_paragraphs(paragraphs, max_tokens=2000, auto_chunk=True, chunk_size=None, overlap=0.2):
+    """
+    Chunk text by paragraphs with specified size and overlap.
+    
+    Args:
+        paragraphs (list): List of paragraphs
+        max_tokens (int): Maximum tokens per chunk when using auto-chunking
+        auto_chunk (bool): Whether to use automatic chunking based on token count
+        chunk_size (int): Custom chunk size in characters (used when auto_chunk is False)
+        overlap (float): Fraction of overlap between chunks (0.0 to 1.0)
+    
+    Returns:
+        list: List of text chunks
+    """
+    chunks = []
+    
+    if auto_chunk:
+        # Use token-based chunking
+        current_chunk = []
+        current_length = 0
+        target_length = max_tokens * 4  # Rough approximation of characters to tokens
+        
+        for para in paragraphs:
+            para_length = len(para) // 4  # Rough approximation of tokens
+            
+            if current_length + para_length > max_tokens:
+                if current_chunk:  # Only add if we have content
+                    chunks.append('\n\n'.join(current_chunk))
+                    # Keep some paragraphs for overlap
+                    overlap_count = max(1, int(len(current_chunk) * overlap))
+                    current_chunk = current_chunk[-overlap_count:]
+                    current_length = sum(len(p) // 4 for p in current_chunk)
+            
+            current_chunk.append(para)
+            current_length += para_length
+        
+        # Add the last chunk if there's anything left
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+    else:
+        # Use character-based chunking with specified size
+        if chunk_size is None:
+            chunk_size = 8000  # Default size if not specified
+        
+        current_chunk = []
+        current_length = 0
+        
+        for para in paragraphs:
+            para_length = len(para)
+            
+            if current_length + para_length > chunk_size:
+                if current_chunk:  # Only add if we have content
+                    chunks.append('\n\n'.join(current_chunk))
+                    # Keep some paragraphs for overlap
+                    overlap_count = max(1, int(len(current_chunk) * overlap))
+                    current_chunk = current_chunk[-overlap_count:]
+                    current_length = sum(len(p) for p in current_chunk)
+            
+            current_chunk.append(para)
+            current_length += para_length
+        
+        # Add the last chunk if there's anything left
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+    
+    print(f"Created {len(chunks)} chunks using paragraph-based chunking")
     return chunks
 
 def process_chunk(chunk, model_name="local-model"):
@@ -170,85 +265,115 @@ def process_chunk(chunk, model_name="local-model"):
             print(f"   Chunk length (chars): {len(chunk)}")
         return None
 
-def main():
-    # First test the API connection
-    if not test_api_connection():
-        print("\n❌ Please check your local API setup and try again.")
-        return
+def extract_qa_pairs(text):
+    """Extract question-answer pairs from text."""
+    # Match Q: and A: patterns, handling various formats
+    pattern = re.compile(r'(?:^|\n)Q(?:uestion)?:\s*(.*?)(?:\n)A(?:nswer)?:\s*(.*?)(?=(?:\n\s*Q(?:uestion)?:|\n\s*$|$))', re.DOTALL)
+    matches = pattern.findall(text)
+    
+    qa_pairs = []
+    for question, answer in matches:
+        # Clean up whitespace
+        question = question.strip()
+        answer = answer.strip()
+        
+        # Skip empty pairs
+        if not question or not answer:
+            continue
+            
+        qa_pairs.append({
+            'question': question,
+            'answer': answer
+        })
+    
+    return qa_pairs
 
-    print("\n📚 Reading Federalist Papers...")
-    try:
-        with open('federalistpapers.txt', 'r', encoding='utf-8') as f:
-            text = f.read()
-            print(f"✅ Successfully read file, {len(text)} characters")
-    except UnicodeDecodeError:
-        print("⚠️ UTF-8 encoding failed, trying latin-1...")
-        with open('federalistpapers.txt', 'r', encoding='latin-1') as f:
-            text = f.read()
-            print(f"✅ Successfully read file with latin-1 encoding, {len(text)} characters")
+def process_file(input_file, output_file, max_tokens=2000, auto_chunk=True, chunk_size=None, overlap=0.2):
+    """
+    Process a text file to create training examples.
     
-    # Clean the text while preserving important structure
-    text = re.sub(r'\s+', ' ', text)
-    text = text.replace('"', '"').replace('"', '"')
-    text = re.sub(r'[^\w\s.,!?;:\'\n\-]', ' ', text)
+    Args:
+        input_file (str): Path to the input text file
+        output_file (str): Path to save the output training data
+        max_tokens (int, optional): Maximum tokens per chunk when using auto-chunking
+        auto_chunk (bool, optional): Whether to use automatic chunking based on token count
+        chunk_size (int, optional): Custom chunk size in characters (used when auto_chunk is False)
+        overlap (float, optional): Fraction of overlap between chunks (0.0 to 1.0)
+    """
+    print(f"Starting to process {input_file}...")
     
-    print("\n📄 Splitting into chunks by argument structure...")
-    chunks = chunk_text(text)
-    print(f"📊 Created {len(chunks)} logically structured chunks")
-    
-    # Test process with first chunk
-    print("\n🧪 Testing processing with first chunk...")
-    test_result = process_chunk(chunks[0])
-    if test_result is None:
-        print("❌ Initial test failed. Please check the error messages above.")
+    # Test API connection
+    if not test_api_connection():
+        print("Error: Could not connect to the API. Please check your internet connection.")
         return
-    print("✅ Initial test successful!")
     
-    print("\n🚀 Processing all chunks...")
-    training_data = []
-    start_time = time.time()
+    # Read the input file
+    try:
+        with open(input_file, 'r', encoding='utf-8') as f:
+            text = f.read()
+    except Exception as e:
+        print(f"Error reading input file: {str(e)}")
+        return
     
-    for i, chunk in enumerate(chunks, 1):
-        print(f"\n📝 Processing chunk {i}/{len(chunks)}...")
+    # Chunk the text
+    print("Chunking text...")
+    if auto_chunk:
+        print(f"Using automatic chunking with max_tokens={max_tokens}")
+    else:
+        print(f"Using custom chunk size: {chunk_size} characters with {overlap*100}% overlap")
+    
+    chunks = chunk_text(text, max_tokens, auto_chunk, chunk_size, overlap)
+    print(f"Created {len(chunks)} chunks.")
+    
+    # Process each chunk
+    print("Processing chunks...")
+    all_qa_pairs = []
+    for i, chunk in enumerate(chunks):
+        print(f"Processing chunk {i+1}/{len(chunks)}...")
         result = process_chunk(chunk)
         if result:
-            training_data.append(result)
-            
-            # Calculate and display progress statistics
-            elapsed = time.time() - start_time
-            avg_time_per_chunk = elapsed / i
-            remaining_chunks = len(chunks) - i
-            estimated_remaining = avg_time_per_chunk * remaining_chunks
-            
-            print(f"⏱️  Progress: {i}/{len(chunks)} chunks")
-            print(f"⌛ Estimated time remaining: {estimated_remaining/60:.1f} minutes")
-            
-            # Save progress after each successful chunk
-            with open('trainingdata_partial2.txt', 'w', encoding='utf-8') as f:
-                f.write('\n\n'.join(training_data))
-            print(f"💾 Progress saved! ({i}/{len(chunks)} chunks)")
-            
-            # Display sample of processed text
-            print("\n🔍 Sample of processed text:")
-            print("-" * 40)
-            print(result[:200] + "...")
-            print("-" * 40)
-        else:
-            print(f"⚠️ Failed to process chunk {i}, skipping...")
-        
-        time.sleep(0.5)
+            qa_pairs = extract_qa_pairs(result)
+            print(f"Extracted {len(qa_pairs)} Q&A pairs from chunk")
+            all_qa_pairs.extend(qa_pairs)
     
-    if not training_data:
-        print("\n❌ No data was successfully processed. Please check the errors above.")
-        return
+    # Write the results to the output file
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for pair in all_qa_pairs:
+                f.write(f"Q: {pair['question']}\nA: {pair['answer']}\n\n")
+        print(f"Successfully wrote {len(all_qa_pairs)} Q&A pairs to {output_file}")
+    except Exception as e:
+        print(f"Error writing output file: {str(e)}")
     
-    print("\n✨ Saving final processed training data...")
-    with open('trainingdata2.txt', 'w', encoding='utf-8') as f:
-        f.write('\n\n'.join(training_data))
+    print("Processing complete!")
+
+def main():
+    """Command line interface for the script."""
+    parser = argparse.ArgumentParser(description='Process Federalist Papers to create training examples')
+    parser.add_argument('--input', '-i', default=os.environ.get('INPUT_FILE', 'federalist_papers.txt'),
+                        help='Input file containing Federalist Papers text')
+    parser.add_argument('--output', '-o', default=os.environ.get('OUTPUT_FILE', 'trainingdata2.txt'),
+                        help='Output file for Q&A training data')
+    parser.add_argument('--max-tokens', '-m', type=int, default=2000,
+                        help='Maximum tokens per chunk when using auto-chunking')
+    parser.add_argument('--chunk-size', '-c', type=int, 
+                        help='Custom chunk size in characters (disables auto-chunking)')
+    parser.add_argument('--overlap', type=float, default=0.2,
+                        help='Fraction of overlap between chunks (0.0 to 1.0)')
     
-    total_time = time.time() - start_time
-    print(f"\n✅ Done! Created trainingdata2.txt with {len(training_data)} examples")
-    print(f"⏰ Total processing time: {total_time/60:.1f} minutes")
+    args = parser.parse_args()
+    
+    # Determine if we're using auto-chunking or custom chunk size
+    auto_chunk = args.chunk_size is None
+    
+    process_file(
+        args.input,
+        args.output,
+        max_tokens=args.max_tokens,
+        auto_chunk=auto_chunk,
+        chunk_size=args.chunk_size,
+        overlap=args.overlap
+    )
 
 if __name__ == "__main__":
     main() 
