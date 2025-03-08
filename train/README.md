@@ -35,3 +35,151 @@ If you have trouble with the requirements.txt, you may have to manually install 
 
 USAGE
 ------------
+
+# AI Chat Interface
+
+A GUI application for interacting with GPT-2 based language models, with visualization capabilities for model activations.
+
+## Features
+
+- Modern, user-friendly chat interface
+- Message history tracking and export
+- Real-time response streaming
+- Model activation visualization
+- Ability to save and compare activation patterns
+- Support for custom models
+
+## Requirements
+
+- Python 3.6+
+- PyQt5
+- PyTorch
+- Transformers
+- Matplotlib
+- NumPy (version 1.x, not compatible with NumPy 2.x)
+
+## Installation
+
+### Easy Setup (Recommended)
+
+#### Windows
+Run the `setup_and_run.bat` script:
+```
+setup_and_run.bat
+```
+
+#### Linux/Mac
+Run the `setup_and_run.sh` script:
+```bash
+chmod +x setup_and_run.sh
+./setup_and_run.sh
+```
+
+### Manual Installation
+
+1. Create a virtual environment:
+```bash
+python -m venv venv
+```
+
+2. Activate the virtual environment:
+   - Windows: `venv\Scripts\activate.bat`
+   - Linux/Mac: `source venv/bin/activate`
+
+3. Install the required packages:
+```bash
+pip install -r requirements.txt
+```
+
+4. Run the application:
+```bash
+python run_chat_gui.py
+```
+
+### Known Issues
+
+- **NumPy Compatibility**: This application requires NumPy 1.x and is not compatible with NumPy 2.x. The requirements.txt file specifies `numpy<2.0.0` to ensure compatibility.
+- **CUDA Support**: If you want to use GPU acceleration, make sure you have the appropriate CUDA version installed for your PyTorch version.
+
+## Usage
+
+### Chat Interface
+
+- Type your message in the input field and press Enter or click Send
+- The AI will generate a response in real-time
+- Chat history is maintained during the session
+- You can export the chat history to a text or JSON file
+
+### Visualization Features
+
+- Switch to the Visualizations tab to explore model activations
+- Select a specific layer from the dropdown menu
+- Use the buttons to visualize current activations, save them, or compare with previously saved ones
+
+### Menu Options
+
+- **File**
+  - Load Model: Load a custom model
+  - Export Chat History: Save the conversation to a file
+  - Exit: Close the application
+  
+- **Settings**
+  - Model Settings: Configure model parameters (temperature, max length, etc.)
+
+- **Help**
+  - About: Information about the application
+
+## Differences from Original chat.py
+
+This GUI version differs from the original command-line interface in several ways:
+
+1. Removed the "JAImes Madison" persona focus
+2. Added a proper message history system
+3. Created a modern, user-friendly interface
+4. Separated the chat and visualization features into tabs
+5. Added export functionality for chat history
+6. Improved error handling and user feedback
+7. Added threading to prevent UI freezing during generation
+
+## Extending the Application
+
+The code is modular and can be extended with additional features:
+
+- Add more visualization types
+- Implement fine-tuning capabilities
+- Add support for different model architectures
+- Implement chat history persistence between sessions
+
+## Troubleshooting
+
+### NumPy Compatibility Issues
+
+If you encounter issues with NumPy compatibility, ensure you're using NumPy 1.x:
+```bash
+pip uninstall numpy
+pip install "numpy<2.0.0"
+```
+
+You can also run the provided fix script:
+- Windows: `fix_numpy.bat`
+- Linux/Mac: `chmod +x fix_numpy.sh && ./fix_numpy.sh`
+
+### Visualization Issues
+
+If you encounter errors when trying to visualize model activations:
+
+1. **Invalid Shape Error**: This can happen when the activation data has an unexpected shape. The application now includes improved error handling to deal with various data shapes, but if you still encounter issues, try selecting a different layer from the dropdown menu.
+
+2. **No Activations Available**: Make sure to send at least one message before trying to visualize activations, as the model needs to process some input to generate activations.
+
+3. **Matplotlib Errors**: If you encounter matplotlib-related errors, try updating matplotlib:
+```bash
+pip install --upgrade matplotlib
+```
+
+### CUDA Issues
+
+For CUDA issues, you may need to install the specific PyTorch version for your CUDA:
+```bash
+pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 torchaudio==2.0.2+cu118 --index-url https://download.pytorch.org/whl/cu118
+```
